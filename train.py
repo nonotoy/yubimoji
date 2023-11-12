@@ -56,10 +56,16 @@ model = Sequential([
 
 '''
 model = Sequential()
-model.add(LSTM(100, activation='relu', input_shape=(input_size, )))
-model.add(RepeatVector(1))
-model.add(LSTM(100, activation='relu', return_sequences=True))
-model.add(TimeDistributed(Dense(1)))
+model.add(LSTM(100, activation='relu', input_shape=(TIME_STEPS, DIMENSION)))
+model.add(BatchNormalization())
+model.add(Dropout(0.2))
+
+model.add(Dense(20, activation='relu'))
+model.add(BatchNormalization())
+model.add(Dropout(0.2))
+
+model.add(Dense(10, activation='relu'))
+model.add(Dense(NUM_CLASSES, activation='softmax'))
 '''
 
 model.compile(
