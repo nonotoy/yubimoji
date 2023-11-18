@@ -5,7 +5,7 @@ from sklearn.model_selection import train_test_split
 
 from tensorflow import keras
 from keras.models import Sequential
-from keras.layers import Dense, LSTM, RepeatVector, TimeDistributed
+from keras.layers import Dense, LSTM, BatchNormalization, Dropout
 
 from tensorflow.python.client import device_lib
 device_lib.list_local_devices()
@@ -42,19 +42,9 @@ X_dataset = np.delete(X_dataset, [0], 1)
 '''
 
 X_train, X_test, y_train, y_test = train_test_split(X_dataset, y_dataset, train_size=0.75, random_state=42)
+X_train = X_train.reshape(-1, TIME_STEPS, DIMENSION)
+X_test = X_test.reshape(-1, TIME_STEPS, DIMENSION)
 
-input_size = TIME_STEPS * DIMENSION
-
-model = Sequential([
-    tf.keras.layers.InputLayer(input_shape=(input_size, )),
-    tf.keras.layers.Dropout(0.2),
-    tf.keras.layers.Dense(20, activation='relu'),
-    tf.keras.layers.Dropout(0.5),
-    tf.keras.layers.Dense(10, activation='relu'),
-    tf.keras.layers.Dense(NUM_CLASSES, activation='softmax')
-])
-
-'''
 model = Sequential()
 model.add(LSTM(100, activation='relu', input_shape=(TIME_STEPS, DIMENSION)))
 model.add(BatchNormalization())
@@ -66,7 +56,6 @@ model.add(Dropout(0.2))
 
 model.add(Dense(10, activation='relu'))
 model.add(Dense(NUM_CLASSES, activation='softmax'))
-'''
 
 model.compile(
     optimizer='adam', 
@@ -93,9 +82,9 @@ predict_result = model.predict(np.array([X_test[0]]))
 #print(np.squeeze(predict_result))
 #print(np.argmax(np.squeeze(predict_result)))
 
-# -----------
 # 推論モデルとして保存
 model.save(model_save_path, include_optimizer=False)
+# -----------
 
 # 推論モデルを読み込み
 model = tf.keras.models.load_model(model_save_path)
@@ -104,8 +93,13 @@ tflite_save_path = 'model/keypoint_classifier/keypoint_classifier.tflite'
 # モデルを変換(量子化)
 converter = tf.lite.TFLiteConverter.from_keras_model(model)
 converter.optimizations = [tf.lite.Optimize.DEFAULT]
-tflite_quantized_model = converter.convert()
 
+# TensorFlow Liteでサポートされていない操作を含むモデルに対応するための設定
+converter.target_spec.supported_ops = [tf.lite.OpsSet.TFLITE_BUILTINS,
+                                       tf.lite.OpsSet.SELECT_TF_OPS]
+converter._experimental_lower_tensor_list_ops = False
+
+tflite_quantized_model = converter.convert()
 open(tflite_save_path, 'wb').write(tflite_quantized_model)
 
 # 推論テスト
@@ -116,8 +110,11 @@ interpreter.allocate_tensors()
 input_details = interpreter.get_input_details()
 output_details = interpreter.get_output_details()
 
+# 推論実施の前に、入力データを適切な形状にリシェイプ
+input_data = np.array([X_dataset[0]]).reshape(1, TIME_STEPS, DIMENSION)
+
 # 推論実施
-interpreter.set_tensor(input_details[0]['index'], np.array([X_dataset[0]]))
+interpreter.set_tensor(input_details[0]['index'], input_data)
 interpreter.invoke()
 tflite_results = interpreter.get_tensor(output_details[0]['index'])
 
