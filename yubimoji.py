@@ -21,10 +21,12 @@ def main(mode, yubimoji_id=None):
     # mode: 0 -> 録画モード, 1 -> 予測モード
 
     cnt = 0
+    Textcnt = ''
+    Textcnt_list = [' 正面',' 左上',' 上',' 右上',' 左',' 正面',' 右',' 左下',' 下',' 右下']
 
     # yubimoji_idが存在しないID、もしくは空の場合、停止
-    if mode == 1:
-        if yubimoji_id < 0 or yubimoji_id > 89 or yubimoji_id == None:
+    if mode == 1 and yubimoji_id != None:
+        if yubimoji_id < 0 or yubimoji_id > 89:
             sys.exit()
 
     # 実行中のファイルのパスをカレントディレクトリに設定
@@ -87,14 +89,22 @@ def main(mode, yubimoji_id=None):
             
             if results.multi_hand_landmarks:
 
-                for hand_landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+                for landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
 
                     # 手の左右判定 / 今回の副テーマ研究では左手の対応はしない
                     if handedness.classification[0].label[0:] == 'Right':
 
                         # ランドマークの画像上の位置を算出する関数
                         # 21ランドマークのx,y座標を算出 (z座標が必要になる場合は関数内で調整)
-                        landmark_list = calc_landmark_list(img, hand_landmarks)
+                        landmark_list = calc_landmark_list(img, landmarks)
+
+                        # 中指第一関節 - 手首の距離計算 (Priyaら (2023))
+                        palmsize = calc_palmsize(landmarks)
+
+                        # 画面表示: 中指第一関節 - 手首の距離の表示
+                        #cv2.putText(img, text=str(palmsize), org=(200,50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.8, color=(64, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+
+                        normalised_landmarks = pre_process_landmark(landmark_list, palmsize)
 
                     ##### 編集中
                         ## ここに相対座標・正規化座標の計算を追加する
@@ -102,64 +112,31 @@ def main(mode, yubimoji_id=None):
                             point_history_list = []
 
                             # 各ランドマークの座標を取得
-                            #for i in range(len(hand_landmarks.landmark)):
-                            #    lm = hand_landmarks.landmark[i]
-                            #    point_history_list.append(lm.x)
-                            #    point_history_list.append(lm.y)
-
-                            #point_history_list.append(palmsize)
-                            #print(len(point_history_list))
-                            #pprint.pprint(landmark_list)
-                            #pre_processed_landmark_list = landmark_list
+                            for i in range(len(landmarks.landmark)):
+                                lm = landmarks.landmark[i]
+                                point_history_list.append(lm.x)
+                                point_history_list.append(lm.y)
+                                
+                            point_history_array = np.array(point_history_list)
+                            point_history_list = point_history_array.reshape((1, 42))
 
                     ##### 編集中
 
-                        # 中指第一関節 - 手首の距離計算 (Priyaら (2023))
-                        palmsize = calc_palmsize(hand_landmarks)
-
-                        normalised_landmarks = pre_process_landmark(landmark_list, palmsize)
-
-                        # 画面表示: 中指第一関節 - 手首の距離の表示
-                        # cv2.putText(img, text=str(palmsize), org=(200,50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.8, color=(64, 0, 0), thickness=1, lineType=cv2.LINE_AA)
-
                         # 文字ラベルの予測
                         if mode == 1:
-                            yubimoji_id = 0
-                            #yubimoji_id = keypoint_classifier(pre_processed_landmark_list)
+                            #yubimoji_id = 0
+                            yubimoji_id = keypoint_classifier(point_history_list)
 
                         # 画面表示: 文字表示
-                        if yubimoji_id != None:
-                            if cnt == 0:
-                                Textcnt = '正面'
-                            elif cnt == 1:
-                                Textcnt = '左上'
-                            elif cnt == 2:
-                                Textcnt = '上'
-                            elif cnt == 3:
-                                Textcnt = '右上'
-                            elif cnt == 4:
-                                Textcnt = '左'
-                            elif cnt == 5:
-                                Textcnt = '正面'
-                            elif cnt == 6:
-                                Textcnt = '右'
-                            elif cnt == 7:
-                                Textcnt = '左下'
-                            elif cnt == 8:
-                                Textcnt = '下'
-                            elif cnt == 9:
-                                Textcnt = '右下'
-                            else:
-                                Textcnt = 'Error'
-
-                            img = putText_japanese(img, yubimoji_labels[yubimoji_id] + ' ' + Textcnt)
+                        Textcnt = Textcnt_list[cnt] if mode == 0 and yubimoji_id != None else ''
+                        img = putText_japanese(img, yubimoji_labels[yubimoji_id] + Textcnt)
                         
                         # 画面表示: ランドマーク間の線を表示
-                        img = showLandmarkLines(img, hand_landmarks)
+                        img = showLandmarkLines(img, landmarks)
 
                         # 録画のみ: 検出情報をcsv出力
                         if mode == 0:
-                            write_csv(yubimoji_id, hand_landmarks, palmsize, starttime)
+                            write_csv(yubimoji_id, landmarks, starttime)
                             write_csv_normalised(yubimoji_id, normalised_landmarks, starttime)      
 
             # 画像の表示
@@ -180,8 +157,6 @@ def calc_landmark_list(img, landmarks):
     for _, landmark in enumerate(landmarks.landmark):
         landmark_x = min(int(landmark.x * img_width), img_width - 1)
         landmark_y = min(int(landmark.y * img_height), img_height - 1)
-        #landmark_z = landmark.z
-        #landmark_list.append([landmark_x, landmark_y, landmark_z])
         landmark_list.append([landmark_x, landmark_y])
 
     return landmark_list
@@ -199,7 +174,6 @@ def pre_process_landmark(landmark_list, palmsize):
 
         temp_landmark_list[index][0] = temp_landmark_list[index][0] - base_x
         temp_landmark_list[index][1] = temp_landmark_list[index][1] - base_y
-        #temp_landmark_list[index][2] = (temp_landmark_list[index][2] - base_z)*200
 
     # 1次元リストに変換
     temp_landmark_list = list(itertools.chain.from_iterable(temp_landmark_list))
@@ -215,13 +189,13 @@ def pre_process_landmark(landmark_list, palmsize):
 
 
 # 中指第一関節 - 手首の距離計算
-def calc_palmsize(hand_landmarks):
+def calc_palmsize(landmarks):
 
     # 手首の座標を取得
-    lm_0 = hand_landmarks.landmark[0]
+    lm_0 = landmarks.landmark[0]
 
     # 中指第一関節の座標を取得
-    lm_9 = hand_landmarks.landmark[9]
+    lm_9 = landmarks.landmark[9]
 
     # 中指第一関節 - 手首の距離を計算
     distance_x = lm_0.x - lm_9.x
@@ -259,9 +233,9 @@ def putText_japanese(img, text):
 
 
 # ランドマーク間の線を表示
-def showLandmarkLines(img, hand_landmarks):
+def showLandmarkLines(img, landmarks):
 
-    # 各ランドマークの座標はhand_landmarks.landmark[0]~[20].x, .y, .zに格納されている
+    # 各ランドマークの座標はlandmarks.landmark[0]~[20].x, .y, .zに格納されている
     img_h, img_w, _ = img.shape
 
     # Landmark間の線
@@ -296,19 +270,19 @@ def showLandmarkLines(img, hand_landmarks):
     # landmarkの繋がりをlineで表示
     for line_id in landmark_line_ids:
         # 1点目座標取得
-        lm = hand_landmarks.landmark[line_id[0]]
+        lm = landmarks.landmark[line_id[0]]
         lm_pos1 = (int(lm.x * img_w), int(lm.y * img_h))
         # 2点目座標取得
-        lm = hand_landmarks.landmark[line_id[1]]
+        lm = landmarks.landmark[line_id[1]]
         lm_pos2 = (int(lm.x * img_w), int(lm.y * img_h))
         # line描画
         cv2.line(img, lm_pos1, lm_pos2, (128, 0, 0), 1)
 
     # landmarkをcircleで表示
-    z_list = [lm.z for lm in hand_landmarks.landmark]
+    z_list = [lm.z for lm in landmarks.landmark]
     z_min = min(z_list)
     z_max = max(z_list)
-    for lm in hand_landmarks.landmark:
+    for lm in landmarks.landmark:
         lm_pos = (int(lm.x * img_w), int(lm.y * img_h))
         lm_z = int((lm.z - z_min) / (z_max - z_min) * 255)
         cv2.circle(
@@ -323,20 +297,17 @@ def showLandmarkLines(img, hand_landmarks):
 
 
 # csv保存
-def write_csv(yubimoji_id, hand_landmarks, palmsize, starttime):
+def write_csv(yubimoji_id, landmarks, starttime):
 
     starttime = starttime.strftime('%Y%m%d%H%M%S')
 
     point_history_list = []
 
     # 各ランドマークの座標を取得
-    for i in range(len(hand_landmarks.landmark)):
-        lm = hand_landmarks.landmark[i]
+    for i in range(len(landmarks.landmark)):
+        lm = landmarks.landmark[i]
         point_history_list.append(lm.x)
         point_history_list.append(lm.y)
-        # point_history_list.append(lm.z)
-
-    point_history_list.append(palmsize)
 
     csv_path = './point_history_{0}_{1}.csv'.format(str(yubimoji_id).zfill(2),starttime)
 
@@ -379,8 +350,9 @@ if __name__ == "__main__":
     66: ぱ	67: ぴ	68: ぷ	69: ぺ	70: ぽ
     71: っ  72: ゃ  73: ゅ  74 :ょ  75:ー
     '''
-    mode = 0
-    char = 70
+    mode = 1
+    #char = 70
     # 50cm
 
-    main(mode,char)
+    #main(mode,char)
+    main(mode)
