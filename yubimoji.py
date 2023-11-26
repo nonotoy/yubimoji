@@ -7,22 +7,19 @@ import os
 import sys
 import cv2
 import copy
-import pprint
+import datetime
 import itertools
 import time
+import collections
 import mediapipe as mp
 import numpy as np
 from PIL import ImageFont, ImageDraw, Image
-import datetime
-import tensorflow as tf
 from model import KeyPointClassifier
+
+os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
 def main(mode, yubimoji_id=None):
     # mode: 0 -> 録画モード, 1 -> 予測モード
-
-    cnt = 0
-    Textcnt = ''
-    Textcnt_list = [' 正面',' 左上',' 上',' 右上',' 左',' 正面',' 右',' 左下',' 下',' 右下']
 
     # yubimoji_idが存在しないID、もしくは空の場合、停止
     if mode == 1 and yubimoji_id != None:
@@ -40,107 +37,129 @@ def main(mode, yubimoji_id=None):
         min_tracking_confidence=0.8     # 追跡信頼度
     )
 
-    # 予測モデルのロード
-    if mode == 1:
-        keypoint_classifier = KeyPointClassifier("model/keypoint_classifier/keypoint_classifier.tflite")
-
     # カメラキャプチャ設定
     video_capture = cv2.VideoCapture(0) #内臓カメラ
     video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
+
+    # バッファリング用
+    #fps = video_capture.get(cv2.CAP_PROP_FPS) # フレームレートの取得
+    #buffer_duration = 3  # バッファリングする秒数
+    #buffer_size = int(fps * buffer_duration) # バッファリングするフレーム数
+    buffer_size = 30 # バッファリングするフレーム数
+
+    # 固定サイズのバッファ（リングバッファ）の初期化
+    frame_buffer = collections.deque(maxlen=buffer_size)
 
     # 指文字のラベル
     with open('setting/hand_keypoint_classifier_label.csv', encoding='utf-8-sig') as f:
         yubimoji_labels = csv.reader(f)
         yubimoji_labels = [row[0] for row in yubimoji_labels]
 
-    # (録画のみ) 指文字登録用変数
-    starttime = datetime.datetime.now()
+    # (録画モードのみ) 録画用変数
+    if mode == 0:
+        recordsCnt = 0 # カウント
+        recordsCnt_list = [' 正面',' 左上',' 上',' 右上',' 左',' 正面',' 右',' 左下',' 下',' 右下'] # 録画位置指示
+
+    # (予測モードのみ) 予測モデルのロード
+    if mode == 1:
+        keypoint_classifier = KeyPointClassifier("model/keypoint_classifier/keypoint_classifier.tflite")
+
+    starttime = datetime.datetime.now() #現在時刻の取得
 
     if video_capture.isOpened():
 
         while True:
 
-            # 3秒経ったらプログラム終了
-            sec_dif = datetime.datetime.now() - starttime
-            sec_dif = sec_dif.total_seconds()  
-            if mode == 0 and sec_dif > 3:
-                time.sleep(1)
-                starttime = datetime.datetime.now() 
-                cnt += 1
+            # (録画モードのみ) 録画回数カウント
+            if mode == 0:
+                sec_dif = datetime.datetime.now() - starttime
+                sec_dif = sec_dif.total_seconds()  
+                if sec_dif > 3:
+                    time.sleep(1)
+                    starttime = datetime.datetime.now() 
+                    recordsCnt += 1
 
-            if cnt > 9:
-                break
+                if recordsCnt >= len(recordsCnt_list):
+                    break
 
             # キー入力(ESC:プログラム終了)
             key = cv2.waitKey(1)
             if key == 27: break
 
             # カメラから画像取得
-            success, img = video_capture.read()
-            #frame_width, frame_height = img.shape[1], img.shape[0]
-            if not success: break
-
+            ret, frame = video_capture.read()
+            if not ret: break
+    
             # 画像を左右反転
-            img = cv2.flip(img, 1)
+            frame = cv2.flip(frame, 1)
 
-            # 検出処理の実行
-            results = hands.process(cv2.cvtColor(img, cv2.COLOR_BGR2RGB))
-            
-            if results.multi_hand_landmarks:
+            # バッファにフレームを追加
+            frame_buffer.append(frame)
 
-                for landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+            # バッファが満たされたら処理を開始 (要改良)
+            # 判定時のみ
+            if len(frame_buffer) == buffer_size:
 
-                    # 手の左右判定 / 今回の副テーマ研究では左手の対応はしない
-                    if handedness.classification[0].label[0:] == 'Right':
+                # バッファ内のフレームを処理する
+                for buffered_frame in frame_buffer:
 
-                        # ランドマークの画像上の位置を算出する関数
-                        # 21ランドマークのx,y座標を算出 (z座標が必要になる場合は関数内で調整)
-                        landmark_list = calc_landmark_list(img, landmarks)
+                    # バッファ内のランドマークをLSTMモデルに供給
+                    # 検出処理の実行
+                    results = hands.process(cv2.cvtColor(buffered_frame, cv2.COLOR_BGR2RGB))
+                    
+                    if results.multi_hand_landmarks:
 
-                        # 中指第一関節 - 手首の距離計算 (Priyaら (2023))
-                        palmsize = calc_palmsize(landmarks)
+                        for landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
 
-                        # 画面表示: 中指第一関節 - 手首の距離の表示
-                        #cv2.putText(img, text=str(palmsize), org=(200,50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.8, color=(64, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+                            # 手の左右判定 / 今回の副テーマ研究では左手の対応はしない
+                            if handedness.classification[0].label[0:] == 'Right':
 
-                        normalised_landmarks = pre_process_landmark(landmark_list, palmsize)
+                                # 掌の距離の取得  (Priyaら (2023)) ######################################################
+                                # 掌 (中指第一関節 - 手首) の距離計算
+                                palmsize = calc_palmsize(landmarks)
 
-                    ##### 編集中
-                        ## ここに相対座標・正規化座標の計算を追加する
-                        if mode == 1:
-                            point_history_list = []
+                                # 画面表示: 掌の距離の表示
+                                # cv2.putText(buffered_frame, text=str(palmsize), org=(200,50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.8, color=(64, 0, 0), thickness=1, lineType=cv2.LINE_AA)
 
-                            # 各ランドマークの座標を取得
-                            for i in range(len(landmarks.landmark)):
-                                lm = landmarks.landmark[i]
-                                point_history_list.append(lm.x)
-                                point_history_list.append(lm.y)
-                                
-                            point_history_array = np.array(point_history_list)
-                            point_history_list = point_history_array.reshape((1, 42))
+                                # 正規化 ##############################################################################
+                                # ランドマークの画像上の位置 (x,y座標) を算出する関数 (z座標が必要になる場合は関数内で調整)
+                                # 理由: 次のブロックで実施する相対座標の計算のため
+                                landmark_list = calc_landmark_list(buffered_frame, landmarks)
 
-                    ##### 編集中
+                                # 手のひらの距離で正規化
+                                # 理由: 学習データに無い位置でジェスチャーをした場合、認識が上手くいかないため、一番最初の座標をもとに相対座標を取得する
+                                #lm_normalised = pre_process_landmark(landmark_list, palmsize)
+                                lm_normalised = pre_process_landmark(landmark_list)
 
-                        # 文字ラベルの予測
-                        if mode == 1:
-                            #yubimoji_id = 0
-                            yubimoji_id = keypoint_classifier(point_history_list)
+                                # 文字ラベルの予測 #####################################################################
+                                if mode == 1:
+                                    # 予測器に合うように形状を変更
+                                    lm_normalised = np.array(lm_normalised).reshape((1, 40))
+                                    # 予測
+                                    yubimoji_id = keypoint_classifier(lm_normalised)
 
-                        # 画面表示: 文字表示
-                        Textcnt = Textcnt_list[cnt] if mode == 0 and yubimoji_id != None else ''
-                        img = putText_japanese(img, yubimoji_labels[yubimoji_id] + Textcnt)
-                        
-                        # 画面表示: ランドマーク間の線を表示
-                        img = showLandmarkLines(img, landmarks)
+                                # 画面表示 ###########################################################################
+                                # 文字表示
+                                str_recPosition = recordsCnt_list[recordsCnt] if mode == 0 and yubimoji_id != None else ''
+                                frame = putText_japanese(buffered_frame, yubimoji_labels[yubimoji_id] + str_recPosition)
+                                print(yubimoji_labels[yubimoji_id])
 
-                        # 録画のみ: 検出情報をcsv出力
-                        if mode == 0:
-                            write_csv(yubimoji_id, landmarks, starttime)
-                            write_csv_normalised(yubimoji_id, normalised_landmarks, starttime)      
+                                # ランドマーク間の線を表示
+                                frame = showLandmarkLines(buffered_frame, landmarks)
+
+                                # 録画のみ: 検出情報をcsv出力 ##########################################################
+                                if mode == 0:
+                                    lm_reshaped = reshapeLandmark(landmarks)
+                                    write_csv(yubimoji_id, lm_reshaped, starttime)
+                                    write_csv(yubimoji_id, lm_normalised, starttime)      
+
+                # バッファのリセット
+                frame_buffer.clear()
 
             # 画像の表示
-            cv2.imshow("MediaPipe Hands", img)
+            cv2.imshow("MediaPipe Hands", frame)
+
 
     # リソースの解放
     video_capture.release()
@@ -148,9 +167,10 @@ def main(mode, yubimoji_id=None):
     cv2.destroyAllWindows()
 
 
-def calc_landmark_list(img, landmarks):
+def calc_landmark_list(frame, landmarks):
 
-    img_width, img_height = img.shape[1], img.shape[0]
+    img_width, img_height = frame.shape[1], frame.shape[0]
+
     landmark_list = []
 
     # 画面上のランドマークの位置を算出
@@ -162,7 +182,7 @@ def calc_landmark_list(img, landmarks):
     return landmark_list
 
 
-def pre_process_landmark(landmark_list, palmsize):
+def pre_process_landmark(landmark_list, palmsize=None):
 
     temp_landmark_list = copy.deepcopy(landmark_list)
 
@@ -178,12 +198,13 @@ def pre_process_landmark(landmark_list, palmsize):
     # 1次元リストに変換
     temp_landmark_list = list(itertools.chain.from_iterable(temp_landmark_list))
 
-    # 正規化
-    def normalize_(n): return n / palmsize
-    temp_landmark_list = list(map(normalize_, temp_landmark_list))
-
     # 最初の二つは0なので削除
     del temp_landmark_list[0:2]
+
+    if palmsize != None:
+        # 手のひらの長さで正規化
+        def normalize_(n): return n / palmsize
+        temp_landmark_list = list(map(normalize_, temp_landmark_list))
 
     return temp_landmark_list
 
@@ -209,13 +230,13 @@ def calc_palmsize(landmarks):
 
 
 # 日本語表示
-def putText_japanese(img, text):
+def putText_japanese(frame, text):
 
     #Notoフォント
     font = ImageFont.truetype('/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc', size=20)
 
     #imgをndarrayからPILに変換
-    img_pil = Image.fromarray(img)
+    img_pil = Image.fromarray(frame)
 
     #drawインスタンス生成
     draw = ImageDraw.Draw(img_pil)
@@ -233,23 +254,20 @@ def putText_japanese(img, text):
 
 
 # ランドマーク間の線を表示
-def showLandmarkLines(img, landmarks):
+def showLandmarkLines(frame, landmarks):
 
     # 各ランドマークの座標はlandmarks.landmark[0]~[20].x, .y, .zに格納されている
-    img_h, img_w, _ = img.shape
+    img_h, img_w, _ = frame.shape
 
     # Landmark間の線
     landmark_line_ids = [ 
-        # 手のひら
         (0, 1),     # 手首 - 親指第一関節
         (1, 5),     # 親指第一関節 - 人差し指第一関節
         (5, 9),     # 人差し指第一関節 - 中指第一関節
         (9, 13),    # 中指第一関節 - 薬指第一関節
         (13, 17),   # 薬指第一関節 - 小指第一関節
         (17, 0),    # 小指第一関節 - 手首
-        (0,9),     # 中指第一関節 - 手首　Priya論文
-
-        # 指
+        (0, 9),     # 中指第一関節 - 手首
         (1, 2),     # 親指第一関節 - 親指第二関節
         (2, 3),     # 親指第二関節 - 親指第三関節
         (3, 4),     # 親指第三関節 - 親指先端
@@ -276,7 +294,7 @@ def showLandmarkLines(img, landmarks):
         lm = landmarks.landmark[line_id[1]]
         lm_pos2 = (int(lm.x * img_w), int(lm.y * img_h))
         # line描画
-        cv2.line(img, lm_pos1, lm_pos2, (128, 0, 0), 1)
+        cv2.line(frame, lm_pos1, lm_pos2, (128, 0, 0), 1)
 
     # landmarkをcircleで表示
     z_list = [lm.z for lm in landmarks.landmark]
@@ -286,48 +304,41 @@ def showLandmarkLines(img, landmarks):
         lm_pos = (int(lm.x * img_w), int(lm.y * img_h))
         lm_z = int((lm.z - z_min) / (z_max - z_min) * 255)
         cv2.circle(
-            img,
+            frame,
             radius=3, 
             center=lm_pos, 
             color=(255, lm_z, lm_z), 
             thickness=-1
         )
 
-    return img
+    return frame
+
+# 各ランドマークの座標を取得
+def reshapeLandmark(landmarks):
+
+    # landmark_list = [lm.x for lm in landmarks.landmark] + [lm.y for lm in landmarks.landmark]
+    landmark_list = []
+
+    for i in range(len(landmarks.landmark)):
+        lm = landmarks.landmark[i]
+        landmark_list.append(lm.x)
+        landmark_list.append(lm.y)
+
+    print(landmark_list)
+
+    return landmark_list
 
 
 # csv保存
-def write_csv(yubimoji_id, landmarks, starttime):
+def write_csv(yubimoji_id, landmark_list, starttime):
 
     starttime = starttime.strftime('%Y%m%d%H%M%S')
-
-    point_history_list = []
-
-    # 各ランドマークの座標を取得
-    for i in range(len(landmarks.landmark)):
-        lm = landmarks.landmark[i]
-        point_history_list.append(lm.x)
-        point_history_list.append(lm.y)
 
     csv_path = './point_history_{0}_{1}.csv'.format(str(yubimoji_id).zfill(2),starttime)
 
     with open(csv_path, 'a', newline="") as f:
         writer = csv.writer(f)
-        writer.writerow([yubimoji_id, *point_history_list])
-
-
-# csv保存
-def write_csv_normalised(yubimoji_id, normalised_landmarks, starttime):
-
-    starttime = starttime.strftime('%Y%m%d%H%M%S')
-
-    point_history_list = normalised_landmarks
-
-    csv_path = './point_history_normalised_{0}_{1}.csv'.format(str(yubimoji_id).zfill(2),starttime)
-
-    with open(csv_path, 'a', newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow([yubimoji_id, *point_history_list])
+        writer.writerow([yubimoji_id, *landmark_list])
 
 
 if __name__ == "__main__": 
@@ -351,7 +362,7 @@ if __name__ == "__main__":
     71: っ  72: ゃ  73: ゅ  74 :ょ  75:ー
     '''
     mode = 1
-    #char = 70
+    char = 70
     # 50cm
 
     #main(mode,char)
