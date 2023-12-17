@@ -18,8 +18,20 @@ from model import KeyPointClassifier
 
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
 
+recordsCnt_list = [' 正面',' 左上',' 上',' 右上',' 左',' 正面',' 右',' 左下',' 下',' 右下'] # 録画位置指示
+
+# 指文字のラベル
+with open('setting/hand_keypoint_classifier_label.csv', encoding='utf-8-sig') as f:
+    yubimoji_labels = csv.reader(f)
+    yubimoji_labels = [row[0] for row in yubimoji_labels]
+
+
 def main(mode, yubimoji_id=None):
     # mode: 0 -> 録画モード, 1 -> 予測モード
+
+    if mode == 0:
+        # (録画モードのみ) 録画用変数
+        recordsCnt = 0 # カウント
 
     # yubimoji_idが存在しないID、もしくは空の場合、停止
     if mode == 1 and yubimoji_id != None:
@@ -47,23 +59,13 @@ def main(mode, yubimoji_id=None):
     #buffer_duration = 3  # バッファリングする秒数
     #buffer_size = int(fps * buffer_duration) # バッファリングするフレーム数
     buffer_size = 30 # バッファリングするフレーム数
+    buffering_threshold = buffer_size // 2 # バッファリングを開始する閾値
 
     # 固定サイズのバッファ（リングバッファ）の初期化
     frame_buffer = collections.deque(maxlen=buffer_size)
 
-    # 指文字のラベル
-    with open('setting/hand_keypoint_classifier_label.csv', encoding='utf-8-sig') as f:
-        yubimoji_labels = csv.reader(f)
-        yubimoji_labels = [row[0] for row in yubimoji_labels]
-
-    # (録画モードのみ) 録画用変数
-    if mode == 0:
-        recordsCnt = 0 # カウント
-        recordsCnt_list = [' 正面',' 左上',' 上',' 右上',' 左',' 正面',' 右',' 左下',' 下',' 右下'] # 録画位置指示
-
-    # (予測モードのみ) 予測モデルのロード
-    if mode == 1:
-        keypoint_classifier = KeyPointClassifier("model/keypoint_classifier/keypoint_classifier.tflite")
+    # 手掌長のバッファ
+    palmsize_buffer = collections.deque(maxlen=buffer_size)
 
     starttime = datetime.datetime.now() #現在時刻の取得
 
@@ -94,77 +96,167 @@ def main(mode, yubimoji_id=None):
             # 画像を左右反転
             frame = cv2.flip(frame, 1)
 
-            # バッファにフレームを追加
-            frame_buffer.append(frame)
+            # バッファ内のランドマークをLSTMモデルに供給
+            # 検出処理の実行
+            results = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+            
+            if results.multi_hand_landmarks:
 
-            # バッファが満たされたら処理を開始 (要改良)
-            # 判定時のみ
-            if len(frame_buffer) == buffer_size:
+                for landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
 
-                # バッファ内のフレームを処理する
-                for buffered_frame in frame_buffer:
+                    # 手の左右判定 / 今回の副テーマ研究では左手の対応はしない
+                    if handedness.classification[0].label[0:] == 'Right':
 
-                    # バッファ内のランドマークをLSTMモデルに供給
-                    # 検出処理の実行
-                    results = hands.process(cv2.cvtColor(buffered_frame, cv2.COLOR_BGR2RGB))
-                    
-                    if results.multi_hand_landmarks:
+                        # 録画モード // バッファは貯めずにタイムフレーム毎に処理
+                        if mode == 0: 
 
-                        for landmarks, handedness in zip(results.multi_hand_landmarks, results.multi_handedness):
+                            appendRecord(frame, landmarks, yubimoji_id, recordsCnt, starttime)
 
-                            # 手の左右判定 / 今回の副テーマ研究では左手の対応はしない
-                            if handedness.classification[0].label[0:] == 'Right':
+                        # 判定モード // 規定バッファ数貯めてから処理
+                        elif mode == 1:
 
-                                # 掌の距離の取得  (Priyaら (2023)) ######################################################
-                                # 掌 (中指第一関節 - 手首) の距離計算
-                                palmsize = calc_palmsize(landmarks)
+                            # 入力開始動作の検出 // 手を閾値以上に前面に動かした時に入力開始の合図とする
+                            # 15フレーム分を一度別にバッファリングしておいて、その中で平均的に前に動いている場合
+                            # もしくは最初と最後を比較して閾値より前面に動いている場合はバッファリングをためて、判定器へ流す
 
-                                # 画面表示: 掌の距離の表示
-                                # cv2.putText(buffered_frame, text=str(palmsize), org=(200,50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.8, color=(64, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+                            # 手掌長を計算してから専用バッファを加えるのでいいかも。
+                            palmsize = calc_palmsize(landmarks)
+                            palmsize_buffer.append(palmsize)
+                            
+                            # バッファが十分に溜まっていない場合、バッファリングの状況に関わらずバッファを貯める
+                            if len(palmsize_buffer) < buffering_threshold:
+                                frame_buffer.append(frame)
+                                continue
 
-                                # 正規化 ##############################################################################
-                                # ランドマークの画像上の位置 (x,y座標) を算出する関数 (z座標が必要になる場合は関数内で調整)
-                                # 理由: 次のブロックで実施する相対座標の計算のため
-                                landmark_list = calc_landmark_list(buffered_frame, landmarks)
 
-                                # 手のひらの距離で正規化
-                                # 理由: 学習データに無い位置でジェスチャーをした場合、認識が上手くいかないため、一番最初の座標をもとに相対座標を取得する
-                                #lm_normalised = pre_process_landmark(landmark_list, palmsize)
-                                lm_normalised = pre_process_landmark(landmark_list)
+                            if detectInputGesture(palmsize_buffer):
 
-                                # 文字ラベルの予測 #####################################################################
-                                if mode == 1:
-                                    # 予測器に合うように形状を変更
-                                    lm_normalised = np.array(lm_normalised).reshape((1, 40))
-                                    # 予測
-                                    yubimoji_id = keypoint_classifier(lm_normalised)
+                                # 動作を検出した場合、一度バッファをクリアして、バッファリングを開始
+                                frame_buffer.clear() 
+                                processing = True
+                                frame_buffer.append(frame)
+                                
+                            # 動作の停止を検出した場合、バッファ
+                            else: 
 
-                                # 画面表示 ###########################################################################
-                                # 文字表示
-                                str_recPosition = recordsCnt_list[recordsCnt] if mode == 0 and yubimoji_id != None else ''
-                                frame = putText_japanese(buffered_frame, yubimoji_labels[yubimoji_id] + str_recPosition)
-                                print(yubimoji_labels[yubimoji_id])
+                                # 前出なしでプロセス中 -> バッファを貯めながら処理中
+                                if processing:
 
-                                # ランドマーク間の線を表示
-                                frame = showLandmarkLines(buffered_frame, landmarks)
+                                    # バッファが十分に溜まった場合、バッファを処理
+                                    if len(frame_buffer) >= buffer_size:
+                                        '''
+                                        process_buffer(
+                                            mode, 
+                                            frame, 
+                                            landmarks, 
+                                            yubimoji_labels, 
+                                            starttime
+                                        )
+                                        '''
+                                    else:
+                                        # バッファが溜まっていない場合は、バッファを貯める
+                                        frame_buffer.append(frame)
 
-                                # 録画のみ: 検出情報をcsv出力 ##########################################################
-                                if mode == 0:
-                                    lm_reshaped = reshapeLandmark(landmarks)
-                                    write_csv(yubimoji_id, lm_reshaped, starttime)
-                                    write_csv(yubimoji_id, lm_normalised, starttime)      
+                                # プロセスもしていないし、入力開始動作もしていない場合、つまり初回で入力開始動作をするまでの期間判定対象外
+                                else:
 
-                # バッファのリセット
-                frame_buffer.clear()
-
-            # 画像の表示
-            cv2.imshow("MediaPipe Hands", frame)
+                                    frame_buffer.clear() 
+                                    processing = False
 
 
     # リソースの解放
     video_capture.release()
     hands.close()
     cv2.destroyAllWindows()
+
+
+
+def appendRecord(frame, landmarks, yubimoji_id, recordsCnt, starttime):
+
+    # 手掌長の取得  (Priyaら (2023)) ######################################################
+    # 手掌長 (中指第一関節 - 手首) 計算
+    palmsize = calc_palmsize(landmarks)
+
+    # 画面表示: 手掌長の表示
+    # cv2.putText(frame_buffer, text=str(palmsize), org=(200,50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.8, color=(64, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+
+    # 正規化 ##############################################################################
+    # ランドマークの画像上の位置 (x,y座標) を算出する関数 (z座標が必要になる場合は関数内で調整)
+    # 理由: 次のブロックで実施する相対座標の計算のため
+    landmark_list = calc_landmark_list(frame, landmarks)
+
+    # 手掌長で正規化
+    # 理由: 学習データに無い位置でジェスチャーをした場合、認識が上手くいかないため、一番最初の座標をもとに相対座標を取得する
+    #lm_normalised = pre_process_landmark(landmark_list, palmsize)
+    lm_normalised = pre_process_landmark(landmark_list)
+
+    # 画面表示 ###########################################################################
+    # 文字表示
+    str_recPosition = recordsCnt_list[recordsCnt] if yubimoji_id != None else ''
+    frame = putText_japanese(frame, yubimoji_labels[yubimoji_id] + str_recPosition)
+    print(yubimoji_labels[yubimoji_id])
+
+    # ランドマーク間の線を表示
+    frame = showLandmarkLines(frame, landmarks)
+
+    # 録画のみ: 検出情報をcsv出力 ##########################################################
+    lm_reshaped = reshapeLandmark(landmarks)
+    write_csv(yubimoji_id, lm_reshaped, starttime)
+    write_csv(yubimoji_id, lm_normalised, starttime)  
+
+    # 画像の表示
+    cv2.imshow("MediaPipe Hands", frame)
+
+
+def processBuffer(frame, landmarks, starttime):
+
+    # 予測モデルのロード
+    keypoint_classifier = KeyPointClassifier("model/keypoint_classifier/keypoint_classifier.tflite")
+
+    # バッファ内の各フレームに対する処理
+    for buffered_frame in frame_buffer:
+
+        # ランドマークの検出
+        results = hands.process(cv2.cvtColor(buffered_frame, cv2.COLOR_BGR2RGB))
+
+        if results.multi_hand_landmarks:
+
+            for landmarks in results.multi_hand_landmarks:
+
+                # 手掌長の取得  (Priyaら (2023)) ######################################################
+                # 手掌長 (中指第一関節 - 手首) 計算
+                palmsize = calc_palmsize(landmarks)
+
+                # 画面表示: 手掌長の表示
+                # cv2.putText(frame_buffer, text=str(palmsize), org=(200,50), fontFace=cv2.FONT_HERSHEY_SIMPLEX, fontScale=0.8, color=(64, 0, 0), thickness=1, lineType=cv2.LINE_AA)
+
+                # 正規化 ##############################################################################
+                # ランドマークの画像上の位置 (x,y座標) を算出する関数 (z座標が必要になる場合は関数内で調整)
+                # 理由: 次のブロックで実施する相対座標の計算のため
+                landmark_list = calc_landmark_list(frame_buffer, landmarks)
+
+                # 手掌長で正規化
+                # 理由: 学習データに無い位置でジェスチャーをした場合、認識が上手くいかないため、一番最初の座標をもとに相対座標を取得する
+                #lm_normalised = pre_process_landmark(landmark_list, palmsize)
+                lm_normalised = pre_process_landmark(landmark_list)
+
+                # 文字ラベルの予測 #####################################################################
+                print(np.array(lm_normalised).shape)
+                # 予測器に合うように形状を変更
+                lm_normalised = np.array(lm_normalised).reshape((1, 30, 40))
+                # 予測
+                yubimoji_id = keypoint_classifier(lm_normalised)
+
+                # 画面表示 ###########################################################################
+                # 文字表示
+                frame = putText_japanese(frame_buffer, yubimoji_labels[yubimoji_id])
+                print(yubimoji_labels[yubimoji_id])
+
+                # ランドマーク間の線を表示
+                frame = showLandmarkLines(frame, landmarks)
+
+    # 画像の表示
+    cv2.imshow("MediaPipe Hands", frame)
 
 
 def calc_landmark_list(frame, landmarks):
@@ -202,7 +294,7 @@ def pre_process_landmark(landmark_list, palmsize=None):
     del temp_landmark_list[0:2]
 
     if palmsize != None:
-        # 手のひらの長さで正規化
+        # 手掌長で正規化
         def normalize_(n): return n / palmsize
         temp_landmark_list = list(map(normalize_, temp_landmark_list))
 
@@ -341,6 +433,26 @@ def write_csv(yubimoji_id, landmark_list, starttime):
         writer.writerow([yubimoji_id, *landmark_list])
 
 
+# 入力動作の検出
+def detectInputGesture(palmsize_buffer, threshold=0.1):
+
+    if len(palmsize_buffer) < 15:
+        return False
+
+    else:
+        cur_palmlength = palmsize_buffer[14]
+        prev_palmlength = palmsize_buffer[0]
+
+        # ランドマーク間の距離を計算
+        distances = cur_palmlength - prev_palmlength
+
+        print(distances)
+
+        # ランドマーク間の距離の最大値が閾値を超えたらTrueを返す
+        return distances > threshold
+
+
+
 if __name__ == "__main__": 
 
     '''
@@ -365,5 +477,5 @@ if __name__ == "__main__":
     char = 70
     # 50cm
 
-    #main(mode,char)
-    main(mode)
+    #main(mode,char) # Record
+    main(mode) # Predict
