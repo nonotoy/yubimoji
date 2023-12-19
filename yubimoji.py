@@ -67,11 +67,15 @@ def main(mode, yubimoji_id=None):
     # 手掌長のバッファ
     palmsize_buffer = collections.deque(maxlen=buffer_size)
 
+    startprocessbufferno = None
+
     starttime = datetime.datetime.now() #現在時刻の取得
 
     if video_capture.isOpened():
 
         while True:
+
+            processing = False
 
             # (録画モードのみ) 録画回数カウント
             if mode == 0:
@@ -123,46 +127,39 @@ def main(mode, yubimoji_id=None):
                             palmsize = calc_palmsize(landmarks)
                             palmsize_buffer.append(palmsize)
                             
-                            # バッファが十分に溜まっていない場合、バッファリングの状況に関わらずバッファを貯める
-                            if len(palmsize_buffer) < buffering_threshold:
-                                frame_buffer.append(frame)
-                                continue
-
+                            #if len(palmsize_buffer) < buffering_threshold:
+                            frame_buffer.append(frame)
 
                             if detectInputGesture(palmsize_buffer):
 
-                                # 動作を検出した場合、一度バッファをクリアして、バッファリングを開始
-                                frame_buffer.clear() 
-                                processing = True
-                                frame_buffer.append(frame)
+                                # 入力開始動作を検知したフレーム番号を取得・更新
+                                startprocessbufferno = len(frame_buffer) - buffering_threshold + 1
+
+                                if len(frame_buffer) >= buffering_threshold:
+
+                                    '''
+                                    process_buffer(
+                                        frame, 
+                                        frame_buffer, 
+                                        hands, 
+                                        starttime
+                                    )
+                                    '''
+                                    print('処理A',startprocessbufferno, len(frame_buffer))
                                 
-                            # 動作の停止を検出した場合、バッファ
-                            else: 
+                            elif startprocessbufferno != None:      
+                                '''
+                                process_buffer(
+                                    frame, 
+                                    frame_buffer, 
+                                    hands, 
+                                    starttime
+                                )
+                                '''
+                                print('処理B',startprocessbufferno, len(frame_buffer))
 
-                                # 前出なしでプロセス中 -> バッファを貯めながら処理中
-                                if processing:
-
-                                    # バッファが十分に溜まった場合、バッファを処理
-                                    if len(frame_buffer) >= buffer_size:
-                                        '''
-                                        process_buffer(
-                                            mode, 
-                                            frame, 
-                                            landmarks, 
-                                            yubimoji_labels, 
-                                            starttime
-                                        )
-                                        '''
-                                    else:
-                                        # バッファが溜まっていない場合は、バッファを貯める
-                                        frame_buffer.append(frame)
-
-                                # プロセスもしていないし、入力開始動作もしていない場合、つまり初回で入力開始動作をするまでの期間判定対象外
-                                else:
-
-                                    frame_buffer.clear() 
-                                    processing = False
-
+                                # 入力開始動作を検知したフレーム番号がない場合は無視
+                                # 入力開始動作をしたけど、新しいフレームが一定数入ってこない場合はバッファをクリアさせたい。例えば60フレーム
 
     # リソースの解放
     video_capture.release()
@@ -208,7 +205,8 @@ def appendRecord(frame, landmarks, yubimoji_id, recordsCnt, starttime):
     cv2.imshow("MediaPipe Hands", frame)
 
 
-def processBuffer(frame, landmarks, starttime):
+
+def processBuffer(frame, frame_buffer, hands, starttime):
 
     # 予測モデルのロード
     keypoint_classifier = KeyPointClassifier("model/keypoint_classifier/keypoint_classifier.tflite")
@@ -241,7 +239,6 @@ def processBuffer(frame, landmarks, starttime):
                 lm_normalised = pre_process_landmark(landmark_list)
 
                 # 文字ラベルの予測 #####################################################################
-                print(np.array(lm_normalised).shape)
                 # 予測器に合うように形状を変更
                 lm_normalised = np.array(lm_normalised).reshape((1, 30, 40))
                 # 予測
@@ -257,6 +254,7 @@ def processBuffer(frame, landmarks, starttime):
 
     # 画像の表示
     cv2.imshow("MediaPipe Hands", frame)
+
 
 
 def calc_landmark_list(frame, landmarks):
@@ -445,8 +443,6 @@ def detectInputGesture(palmsize_buffer, threshold=0.1):
 
         # ランドマーク間の距離を計算
         distances = cur_palmlength - prev_palmlength
-
-        print(distances)
 
         # ランドマーク間の距離の最大値が閾値を超えたらTrueを返す
         return distances > threshold
