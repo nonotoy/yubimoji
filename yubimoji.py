@@ -1,45 +1,50 @@
-# Outputとなるクラス数: 87
-# 清音46 + 濁音・半濁音・拗音・長音・促音30 + 数字10 + コマンド1 (入力削除用) 
+##############################################################################
+# Description: 日本手話の指文字を認識するプログラム
+##############################################################################
 
+# Standard Library
+import os
 import sys
 import csv
 import datetime
 import time
 import collections
 
+# Third-Party Libraries
 import numpy as np
 import cv2
 import mediapipe as mp
-from model import KeyPointClassifier
+import tensorflow as tf
 
+# Local Libraries
 import draw
 import calc
 import write
+from model import KeyPointClassifier
 
-import os
-os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+# 共通変数 ####################################################################
 
-import tensorflow as tf
-
-recordsCnt_list = [' 正面',' 左上',' 上',' 右上',' 左',' 正面',' 右',' 左下',' 下',' 右下'] # 録画位置指示
+# 録画位置指示
+recLocations = ['正面','左上','上','右上','左','正面','右','左下','下','右下']
 
 # 指文字のラベル
-with open('setting/hand_keypoint_classifier_label.csv', encoding='utf-8-sig') as f:
-    yubimoji_labels = csv.reader(f)
-    yubimoji_labels = [row[0] for row in yubimoji_labels]
+labelFilePath = 'setting/hand_keypoint_classifier_label.csv'
+with open(labelFilePath, encoding='utf-8-sig') as f:
+    Labels = csv.reader(f)
+    Labels = [row[0] for row in Labels]
 
 
+# メイン関数 ##################################################################
 def main(mode, yubimoji_id=None):
     # mode: 0 -> 録画モード, 1 -> 予測モード
 
-    os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
+    # (録画モードのみ) 録画用カウント変数の設定
     if mode == 0:
-        # (録画モードのみ) 録画用変数
-        recordsCnt = 0 # カウント
+        if yubimoji_id != None and yubimoji_id >= 0 and yubimoji_id <= 88:
+            recordsCnt = 0
 
-    # yubimoji_idが存在しないID、もしくは空の場合、停止
-    if mode == 1 and yubimoji_id != None:
-        if yubimoji_id < 0 or yubimoji_id > 89:
+        # yubimoji_idが存在しない、もしくは空の場合、停止
+        else:
             sys.exit()
 
     # 実行中のファイルのパスをカレントディレクトリに設定
@@ -54,7 +59,7 @@ def main(mode, yubimoji_id=None):
     )
 
     # カメラキャプチャ設定
-    video_capture = cv2.VideoCapture(1) #内臓カメラ
+    video_capture = cv2.VideoCapture(0) #内臓カメラ
     video_capture.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
     video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
 
@@ -87,7 +92,7 @@ def main(mode, yubimoji_id=None):
                     starttime = datetime.datetime.now() 
                     recordsCnt += 1
 
-                if recordsCnt >= len(recordsCnt_list):
+                if recordsCnt >= len(recLocations):
                     break
 
             # キー入力(ESC:プログラム終了)
@@ -101,7 +106,16 @@ def main(mode, yubimoji_id=None):
             # 画像を左右反転
             frame = cv2.flip(frame, 1)
 
+            # 以下を関数化 frame, landmarks_buffer, starttimeを引数に
+
+            # if mode == 0: 
+            # performRecognition(frame, starttime, yubimoji_id, recordsCnt)
+            # else:
+            # performRecognition(frame, landmarks_buffer, palmLength_buffer, starttime)
+
+
             # 検出処理の実行
+            ##################################################################
             results = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
             
             if results.multi_hand_landmarks:
@@ -114,7 +128,11 @@ def main(mode, yubimoji_id=None):
                         # 録画モード // バッファは貯めずにタイムフレーム毎に処理
                         if mode == 0: 
 
-                            appendRecord(frame, landmarks, yubimoji_id, recordsCnt, starttime)
+                            appendRecord(frame, 
+                                         landmarks, 
+                                         yubimoji_id, 
+                                         recordsCnt, 
+                                         starttime)
 
                         # 判定モード // 規定バッファ数貯めてから処理
                         elif mode == 1:
@@ -150,21 +168,24 @@ def main(mode, yubimoji_id=None):
     cv2.destroyAllWindows()
 
 
-
 def appendRecord(frame, landmarks, yubimoji_id, recordsCnt, starttime):
 
-    # 手掌長の取得 ######################################################
+    # 手掌長の取得 #############################################################
     palmLength = calc.palmLength(landmarks)
 
-    # 正規化 ##############################################################################
+    # 正規化 ##################################################################
     landmark_list = calc.lmRelativeLoc(frame, landmarks)
-    #lm_normalised = calc.Normalisation(landmark_list, palmLength) # 手掌長で正規化する場合
+
+    # 手掌長で正規化する場合
+    #lm_normalised = calc.Normalisation(landmark_list, palmLength) 
+
     lm_normalised = calc.Normalisation(landmark_list)
 
-    # 画面表示 ###########################################################################
+    # 画面表示 ################################################################
+
     # 文字表示
-    str_recPosition = recordsCnt_list[recordsCnt] if yubimoji_id != None else ''
-    frame = draw.jpntext(frame, yubimoji_labels[yubimoji_id] + str_recPosition)
+    str_recPosition = recLocations[recordsCnt] if yubimoji_id != None else ''
+    frame = draw.jpntext(frame, Labels[yubimoji_id] + str_recPosition)
 
     # ランドマーク間の線を表示
     frame = draw.lmLines(frame, landmarks)
@@ -172,14 +193,14 @@ def appendRecord(frame, landmarks, yubimoji_id, recordsCnt, starttime):
     # 手掌長の表示
     # frame = draw.palmLength(frame, palmLength)
 
-    # 録画のみ: 検出情報をcsv出力 ##########################################################
+    # 録画のみ: 検出情報をcsv出力 ###############################################
+
     lm_reshaped = reshapeLandmark(landmarks)
     write.csvRecord(lm_reshaped, yubimoji_id, starttime)
     write.csvRecord(lm_normalised, yubimoji_id, starttime)  
 
     # 画像の表示
     cv2.imshow("MediaPipe Hands", frame)
-
 
 
 def processBuffer(frame, landmarks_buffer, starttime=None):
@@ -189,38 +210,39 @@ def processBuffer(frame, landmarks_buffer, starttime=None):
     # バッファ内の各フレームに対する処理
     for landmarks in landmarks_buffer:
 
-        # 手掌長の取得 ######################################################
+        # 手掌長の取得 #########################################################
         palmLength = calc.palmLength(landmarks)
 
-        # 正規化 ##############################################################################
+        # 正規化 ##############################################################
         landmark_list = calc.lmRelativeLoc(frame, landmarks)
-        #lm_normalised = calc.Normalisation(landmark_list, palmLength) # 手掌長で正規化する場合
+        # 手掌長で正規化する場合
+        #lm_normalised = calc.Normalisation(landmark_list, palmLength) 
         lm_normalised = calc.Normalisation(landmark_list)
 
         # 正規化後のランドマークをバッファごとに保管
         lm_normalised_buffer.append(lm_normalised)
 
-    # 文字の予測 #####################################################################
-    
+        # 画面表示 ############################################################
+        # ランドマーク間の線を表示
+        frame = draw.lmLines(frame, landmarks)
+
+        # 手掌長の表示
+        # frame = draw.palmLength(frame, palmLength)
+
+    # 文字の予測 ###############################################################
     # 予測モデルのロード
-    keypoint_classifier = KeyPointClassifier("model/keypoint_classifier/keypoint_classifier.tflite")
+    tflitePath = "model/keypoint_classifier/keypoint_classifier.tflite"
+    keypoint_classifier = KeyPointClassifier(tflitePath)
 
     # 予測
-    yubimoji_id = keypoint_classifier(lm_normalised_buffer)
-    print(yubimoji_labels[yubimoji_id])
+    lm_list = np.array(lm_normalised_buffer, dtype=np.float32)
+    lm_list = np.expand_dims(lm_list, axis=0)
 
-    # 画面表示 ###########################################################################
+    yubimoji_id = keypoint_classifier(lm_list)
+
+    # 画面表示 ################################################################
     # 文字表示
-    #frame = draw.jpntext(landmarks_buffer, yubimoji_labels[yubimoji_id])
-
-    # 最新のフレームを取得
-    landmarks = landmarks_buffer[-1]
-    # ランドマーク間の線を表示
-    frame = draw.lmLines(frame, landmarks)
-
-    # 手掌長の表示
-    palmLength_lastest = calc.palmLength(landmarks)
-    # frame = draw.palmLength(frame, palmLength_lastest)
+    frame = draw.jpntext(frame, Labels[yubimoji_id])
 
     # データが流れているかの確認用
     #lm_reshaped = reshapeLandmark(landmarks_buffer)
@@ -233,7 +255,6 @@ def processBuffer(frame, landmarks_buffer, starttime=None):
 # 各ランドマークの座標を取得
 def reshapeLandmark(landmarks):
 
-    # landmark_list = [lm.x for lm in landmarks.landmark] + [lm.y for lm in landmarks.landmark]
     landmark_list = []
 
     for i in range(len(landmarks.landmark)):
@@ -262,6 +283,8 @@ def detectInputGesture(palmLength_buffer, threshold=0.1):
 
 
 if __name__ == "__main__": 
+    # Outputとなるクラス数: 87
+    # 清音46 + 濁音・半濁音・拗音・長音・促音30 + 数字10 + コマンド1 (入力削除用) 
 
     '''
     0: あ	1: い	2: う	3: え	4: お

@@ -3,7 +3,6 @@
 import numpy as np
 import tensorflow as tf
 
-
 class KeyPointClassifier(object):
     def __init__(self,model_path,num_threads=1,):
         self.interpreter = tf.lite.Interpreter(model_path=model_path,
@@ -13,16 +12,12 @@ class KeyPointClassifier(object):
         self.input_details = self.interpreter.get_input_details()
         self.output_details = self.interpreter.get_output_details()
 
-    def __call__(self,landmark_list,):
 
-        landmark_list = np.array(landmark_list, dtype=np.float32)
-        landmark_list = np.expand_dims(landmark_list, axis=0)
+    def __call__(self,landmark_list,):
 
         input_details_tensor_index = self.input_details[0]['index']
         
-        self.interpreter.set_tensor(
-            input_details_tensor_index,
-            landmark_list)
+        self.interpreter.set_tensor(input_details_tensor_index,landmark_list)
         
         # 
         self.interpreter.invoke()
