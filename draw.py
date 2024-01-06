@@ -5,29 +5,6 @@ import cv2
 import numpy as np
 from PIL import ImageFont, ImageDraw, Image
 
-# 日本語表示
-def jpntext(frame, text):
-
-    #Notoフォント
-    font = ImageFont.truetype('/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc', size=20)
-
-    #imgをndarrayからPILに変換
-    img_pil = Image.fromarray(frame)
-
-    #drawインスタンス生成
-    draw = ImageDraw.Draw(img_pil)
-
-    #テキスト描画
-    draw.text(
-        xy=(20, 20),
-        text=text, 
-        font=font, 
-        fill=(0, 0, 0)
-    )
-
-    #PILからndarrayに変換して返す
-    return np.array(img_pil)
-
 
 # ランドマーク間の線を表示
 def lmLines(frame, landmarks):
@@ -105,3 +82,68 @@ def palmLength(frame, palmLength):
     )
 
     return frame
+
+
+class JpnText(object):
+
+    def __init__(self, frame):
+
+        #imgをndarrayからPILに変換
+        self.img_pil = Image.fromarray(frame)
+
+        #drawインスタンス生成
+        self.draw = ImageDraw.Draw(self.img_pil)
+
+
+    def curResults(self, text):
+
+        font = ImageFont.truetype('/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc', size=20)
+
+        #テキスト描画
+        self.draw.text(
+            xy=(20, 20),
+            text=text, 
+            font=font, 
+            fill=(0, 0, 0)
+        )
+
+        #PILからndarrayに変換して返す
+        return np.array(self.img_pil)
+
+    
+    # 判定履歴表示
+    def results(self, results_list, img_h):
+
+        font = ImageFont.truetype('/System/Library/Fonts/ヒラギノ角ゴシック W4.ttc', size=12)
+
+        row_h = 18
+        confidence_threshold = 0.7
+
+        results_list = results_list[::-1]
+
+        for i in range(len(results_list)):
+
+            # 各行の開始位置
+            y_axis = 10 + i * row_h
+
+            # 現在処理している文字列の終端が画像の高さを超えたら終了
+            if y_axis + row_h > img_h:
+                break
+
+            # 現在処理している文字列と確信度を取得
+            yubimoji, confidence = results_list[i][0], results_list[i][1]
+
+            # 確信度が閾値を下回ったら文字列を「ー」にする
+            result_txt = yubimoji + '\t' + '{:.2f}%'.format(confidence * 100) if confidence > confidence_threshold else 'N/A'
+        
+            #テキスト描画
+            self.draw.text(
+                xy=(560, y_axis),
+                text=result_txt, 
+                font=font,
+                # 閾値以下の場合は文字色をグレーにする
+                fill=(0, 0, 0) if confidence > confidence_threshold else (128, 128, 128)
+            )
+
+        #PILからndarrayに変換して返す
+        return np.array(self.img_pil)

@@ -18,6 +18,7 @@ import tensorflow as tf
 
 # Local Libraries
 import draw
+from draw import JpnText
 import calc
 import write
 from model import KeyPointClassifier
@@ -75,6 +76,9 @@ def main(mode, yubimoji_id=None):
     # 手掌長のバッファ
     palmLength_buffer = collections.deque(maxlen=buffer_size)
 
+    # 結果のバッファ
+    results_buffer = []
+
     startprocessbufferno = None
 
     starttime = datetime.datetime.now() #現在時刻の取得
@@ -106,13 +110,11 @@ def main(mode, yubimoji_id=None):
             # 画像を左右反転
             frame = cv2.flip(frame, 1)
 
-            # 以下を関数化 frame, landmarks_buffer, starttimeを引数に
-
-            # if mode == 0: 
-            # performRecognition(frame, starttime, yubimoji_id, recordsCnt)
-            # else:
-            # performRecognition(frame, landmarks_buffer, palmLength_buffer, starttime)
-
+            # 判定モードの場合、結果表示領域用にframe内の指定範囲を塗りつぶし
+            if mode == 1:
+                height, width = frame.shape[:2]
+                colour = (255, 255, 255) # 白
+                cv2.rectangle(frame, (550, 0), (width, height), colour, -1)
 
             # 検出処理の実行
             ##################################################################
@@ -154,7 +156,7 @@ def main(mode, yubimoji_id=None):
                                 if startprocessbufferno == None:
                                     startprocessbufferno = len(landmarks_buffer) - buffering_threshold + 1
 
-                                processBuffer(frame, landmarks_buffer, starttime)
+                                processBuffer(frame, landmarks_buffer, results_buffer)
                                 #print(len(landmarks_buffer))
 
                                 #print(startprocessbufferno, len(landmarks_buffer))
@@ -203,7 +205,10 @@ def appendRecord(frame, landmarks, yubimoji_id, recordsCnt, starttime):
     cv2.imshow("MediaPipe Hands", frame)
 
 
-def processBuffer(frame, landmarks_buffer, starttime=None):
+def processBuffer(frame, landmarks_buffer, results_buffer):
+
+    # 初期化
+    drawJpnText = JpnText(frame)
 
     lm_normalised_buffer = []
 
@@ -222,13 +227,6 @@ def processBuffer(frame, landmarks_buffer, starttime=None):
         # 正規化後のランドマークをバッファごとに保管
         lm_normalised_buffer.append(lm_normalised)
 
-        # 画面表示 ############################################################
-        # ランドマーク間の線を表示
-        frame = draw.lmLines(frame, landmarks)
-
-        # 手掌長の表示
-        # frame = draw.palmLength(frame, palmLength)
-
     # 文字の予測 ###############################################################
     # 予測モデルのロード
     tflitePath = "model/keypoint_classifier/keypoint_classifier.tflite"
@@ -236,17 +234,25 @@ def processBuffer(frame, landmarks_buffer, starttime=None):
 
     # 予測
     lm_list = np.array(lm_normalised_buffer, dtype=np.float32)
-    lm_list = np.expand_dims(lm_list, axis=0)
+    lm_list = np.expand_dims(lm_list, axis=0) # (1, 30, 40)
 
-    yubimoji_id = keypoint_classifier(lm_list)
+    yubimoji_id, confidence = keypoint_classifier(lm_list)
 
     # 画面表示 ################################################################
-    # 文字表示
-    frame = draw.jpntext(frame, Labels[yubimoji_id])
+    # 判定結果と確信度を表示
+    results_buffer.append([Labels[yubimoji_id], confidence])
+    lastest_results = results_buffer[-30:] # 30フレーム分の履歴を保持 (画面に表示しきれなくなった場合は過去分から非表示)
 
-    # データが流れているかの確認用
-    #lm_reshaped = reshapeLandmark(landmarks_buffer)
-    #write.csvRecord(landmarks_buffer) #30フレーム
+    img_h = frame.shape[0]
+    frame = drawJpnText.results(lastest_results, img_h)
+
+    # ランドマーク間の線を表示
+    lm_latest = landmarks_buffer[-1]
+    frame = draw.lmLines(frame, lm_latest)
+
+    # 手掌長の表示
+    palmLength_latest = calc.palmLength(lm_latest)
+    # frame = draw.palmLength(frame, palmLength_latest)
 
     # 画像の表示
     cv2.imshow("MediaPipe Hands", frame)
