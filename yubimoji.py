@@ -11,17 +11,13 @@ import time
 import collections
 
 # Third-Party Libraries
-import numpy as np
 import cv2
 import mediapipe as mp
-import tensorflow as tf
 
 # Local Libraries
-import draw
-from draw import JpnText
 import calc
-import write
-from model import KeyPointClassifier
+import record
+import classify
 
 # 共通変数 ####################################################################
 
@@ -68,7 +64,12 @@ def main(mode, yubimoji_id=None):
     #fps = video_capture.get(cv2.CAP_PROP_FPS) # フレームレートの取得
     #buffer_duration = 3  # バッファリングする秒数
     buffer_size = 30 # int(fps * buffer_duration) バッファリングするフレーム数
-    buffering_threshold = buffer_size // 2 # バッファリングを開始する閾値
+    #buffering_threshold = buffer_size # バッファリングを開始する閾値
+
+    # 非入力カウント
+    InputCount = 0 # 便宜的に
+    noInputCount = 0
+    clearance_threshold = 15 # バッファをクリアする閾値
 
     # ランドマークのバッファ（リングバッファ）の初期化
     landmarks_buffer = collections.deque(maxlen=buffer_size)
@@ -79,7 +80,9 @@ def main(mode, yubimoji_id=None):
     # 結果のバッファ
     results_buffer = []
 
-    startprocessbufferno = None
+    # 処理中フラグ
+    startprocessbufferno = None # 消したい
+    isProcessing = False
 
     starttime = datetime.datetime.now() #現在時刻の取得
 
@@ -127,14 +130,21 @@ def main(mode, yubimoji_id=None):
                     # 手の左右判定 / 今回の副テーマ研究では左手の対応はしない
                     if handedness.classification[0].label[0:] == 'Right':
 
+                        # 非入力カウントのリセット
+                        noInputCount = 0
+
+                        InputCount += 1
+                        print('Right Hand :', InputCount)
+
                         # 録画モード // バッファは貯めずにタイムフレーム毎に処理
                         if mode == 0: 
 
-                            appendRecord(frame, 
-                                         landmarks, 
-                                         yubimoji_id, 
-                                         recordsCnt, 
-                                         starttime)
+                            record.append(
+                                frame, 
+                                landmarks, 
+                                yubimoji_id, 
+                                recordsCnt, 
+                                starttime)
 
                         # 判定モード // 規定バッファ数貯めてから処理
                         elif mode == 1:
@@ -142,133 +152,59 @@ def main(mode, yubimoji_id=None):
                             # 入力開始動作の検出 // 手を閾値以上に前面に動かした時に入力開始の合図とする
                             # 15フレーム分を一度別にバッファリングしておいて、その中で平均的に前に動いている場合
                             # もしくは最初と最後を比較して閾値より前面に動いている場合はバッファリングをためて、判定器へ流す
+                            
 
-                            # 手掌長を計算してから専用バッファを加えるのでいいかも。
+
+                            
+                            # メインバッファを作って、そこから各処理用にバッファを切り分ける
+
+
+
+                            # 手掌長を計算してから専用バッファに追加
                             palmLength = calc.palmLength(landmarks)
                             palmLength_buffer.append(palmLength)
                             
-                            #if len(palmLength_buffer) < buffering_threshold:
-                            landmarks_buffer.append(landmarks)
+                            landmarks_buffer.append(landmarks) # 最新の30フレーム分をバッファリング / 古いものは自動消去される
 
-                            if (detectInputGesture(palmLength_buffer) and len(landmarks_buffer) >= 30) or startprocessbufferno != None:
+                            # 入力動作を検知した場合、もしくはすでに入力開始動作を検知している場合
+                            if len(landmarks_buffer) >= buffer_size and \
+                               (detectInputGesture(palmLength_buffer) or \
+                                isProcessing == True):
 
-                                # 入力開始動作を検知したフレーム番号を取得・更新
-                                if startprocessbufferno == None:
-                                    startprocessbufferno = len(landmarks_buffer) - buffering_threshold + 1
+                                # 入力処理フラグを立てる
+                                isProcessing = True
 
-                                processBuffer(frame, landmarks_buffer, results_buffer)
-                                #print(len(landmarks_buffer))
+                                classify.classify(frame, landmarks_buffer, results_buffer)
 
-                                #print(startprocessbufferno, len(landmarks_buffer))
+                    # 左手の場合
+                    else:
+                        print('Left Hand :', noInputCount)
 
-                                # 入力開始動作を検知したフレーム番号がない場合は無視
-                                # 入力開始動作をしたけど、新しいフレームが一定数入ってこない場合はバッファをクリアさせたい。例えば60フレーム
+                        noInputCount += 1
+
+                        if noInputCount > clearance_threshold:
+                            clearBuffer(landmarks_buffer, palmLength_buffer, results_buffer)
+                            isProcessing == False
+                            noInputCount = 0
+                            InputCount = 0
+
+            # 入力がない場合
+            else:
+                print('No Input :', noInputCount)
+
+                noInputCount += 1
+
+                if noInputCount > clearance_threshold:
+                    clearBuffer(landmarks_buffer, palmLength_buffer, results_buffer)
+                    isProcessing == False
+                    noInputCount = 0
+                    InputCount = 0
+
 
     # リソースの解放
     video_capture.release()
     hands.close()
     cv2.destroyAllWindows()
-
-
-def appendRecord(frame, landmarks, yubimoji_id, recordsCnt, starttime):
-
-    # 手掌長の取得 #############################################################
-    palmLength = calc.palmLength(landmarks)
-
-    # 正規化 ##################################################################
-    landmark_list = calc.lmRelativeLoc(frame, landmarks)
-
-    # 手掌長で正規化する場合
-    #lm_normalised = calc.Normalisation(landmark_list, palmLength) 
-
-    lm_normalised = calc.Normalisation(landmark_list)
-
-    # 画面表示 ################################################################
-
-    # 文字表示
-    str_recPosition = recLocations[recordsCnt] if yubimoji_id != None else ''
-    frame = draw.jpntext(frame, Labels[yubimoji_id] + str_recPosition)
-
-    # ランドマーク間の線を表示
-    frame = draw.lmLines(frame, landmarks)
-
-    # 手掌長の表示
-    # frame = draw.palmLength(frame, palmLength)
-
-    # 録画のみ: 検出情報をcsv出力 ###############################################
-
-    lm_reshaped = reshapeLandmark(landmarks)
-    write.csvRecord(lm_reshaped, yubimoji_id, starttime)
-    write.csvRecord(lm_normalised, yubimoji_id, starttime)  
-
-    # 画像の表示
-    cv2.imshow("MediaPipe Hands", frame)
-
-
-def processBuffer(frame, landmarks_buffer, results_buffer):
-
-    # 初期化
-    drawJpnText = JpnText(frame)
-
-    lm_normalised_buffer = []
-
-    # バッファ内の各フレームに対する処理
-    for landmarks in landmarks_buffer:
-
-        # 手掌長の取得 #########################################################
-        palmLength = calc.palmLength(landmarks)
-
-        # 正規化 ##############################################################
-        landmark_list = calc.lmRelativeLoc(frame, landmarks)
-        # 手掌長で正規化する場合
-        #lm_normalised = calc.Normalisation(landmark_list, palmLength) 
-        lm_normalised = calc.Normalisation(landmark_list)
-
-        # 正規化後のランドマークをバッファごとに保管
-        lm_normalised_buffer.append(lm_normalised)
-
-    # 文字の予測 ###############################################################
-    # 予測モデルのロード
-    tflitePath = "model/keypoint_classifier/keypoint_classifier.tflite"
-    keypoint_classifier = KeyPointClassifier(tflitePath)
-
-    # 予測
-    lm_list = np.array(lm_normalised_buffer, dtype=np.float32)
-    lm_list = np.expand_dims(lm_list, axis=0) # (1, 30, 40)
-
-    yubimoji_id, confidence = keypoint_classifier(lm_list)
-
-    # 画面表示 ################################################################
-    # 判定結果と確信度を表示
-    results_buffer.append([Labels[yubimoji_id], confidence])
-    lastest_results = results_buffer[-30:] # 30フレーム分の履歴を保持 (画面に表示しきれなくなった場合は過去分から非表示)
-
-    img_h = frame.shape[0]
-    frame = drawJpnText.results(lastest_results, img_h)
-
-    # ランドマーク間の線を表示
-    lm_latest = landmarks_buffer[-1]
-    frame = draw.lmLines(frame, lm_latest)
-
-    # 手掌長の表示
-    palmLength_latest = calc.palmLength(lm_latest)
-    # frame = draw.palmLength(frame, palmLength_latest)
-
-    # 画像の表示
-    cv2.imshow("MediaPipe Hands", frame)
-
-
-# 各ランドマークの座標を取得
-def reshapeLandmark(landmarks):
-
-    landmark_list = []
-
-    for i in range(len(landmarks.landmark)):
-        lm = landmarks.landmark[i]
-        landmark_list.append(lm.x)
-        landmark_list.append(lm.y)
-
-    return landmark_list
 
 
 # 入力動作の検出
@@ -286,6 +222,18 @@ def detectInputGesture(palmLength_buffer, threshold=0.1):
 
         # ランドマーク間の距離の最大値が閾値を超えたらTrueを返す
         return distances > threshold
+
+
+# バッファのクリア
+def clearBuffer(landmarks_buffer, palmLength_buffer, results_buffer):
+
+    # 新しいフレームが一定数入ってこない場合はバッファをクリア
+    # 判定の結果右手の判定が数フレーム外れてしまうことも考えられるので、閾値を超えるまではクリアしない
+
+    landmarks_buffer.clear()
+    palmLength_buffer.clear()
+    results_buffer.clear()
+    print('buffer cleared')
 
 
 if __name__ == "__main__": 
