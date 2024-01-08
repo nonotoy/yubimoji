@@ -25,7 +25,12 @@ def append(frame, landmarks, yubimoji_id, recordsCnt, starttime):
     palmLength = calc.palmLength(landmarks)
 
     # 正規化 ##################################################################
-    landmark_list = calc.lmRelativeLoc(frame, landmarks)
+    img_width, img_height = frame.shape[1], frame.shape[0]
+    
+    # Landmarksのデータ型を表示
+    print(type(landmarks))
+
+    landmark_list = calc.lmRelativeLoc(img_width, img_height, landmarks)
 
     # 手掌長で正規化する場合
     #lm_normalised = calc.Normalisation(landmark_list, palmLength) 
@@ -36,7 +41,7 @@ def append(frame, landmarks, yubimoji_id, recordsCnt, starttime):
 
     # 文字表示
     str_recPosition = recLocations[recordsCnt] if yubimoji_id != None else ''
-    frame = draw.jpntext(frame, Labels[yubimoji_id] + str_recPosition)
+    frame = draw.JpnText(frame, Labels[yubimoji_id] + str_recPosition)
 
     # ランドマーク間の線を表示
     frame = draw.lmLines(frame, landmarks)
@@ -44,8 +49,7 @@ def append(frame, landmarks, yubimoji_id, recordsCnt, starttime):
     # 手掌長の表示
     # frame = draw.palmLength(frame, palmLength)
 
-    # 録画のみ: 検出情報をcsv出力 ###############################################
-
+    # 書き出し ################################################################
     lm_reshaped = reshapeLandmark(landmarks)
     write.csvRecord(lm_reshaped, yubimoji_id, starttime)
     write.csvRecord(lm_normalised, yubimoji_id, starttime)  

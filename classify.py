@@ -32,7 +32,9 @@ def classify(frame, landmarks_buffer, results_buffer):
         palmLength = calc.palmLength(landmarks)
 
         # 正規化 ##############################################################
-        landmark_list = calc.lmRelativeLoc(frame, landmarks)
+        img_width, img_height = frame.shape[1], frame.shape[0]
+
+        landmark_list = calc.lmRelativeLoc(img_width, img_height, landmarks)
         # 手掌長で正規化する場合
         #lm_normalised = calc.Normalisation(landmark_list, palmLength) 
         lm_normalised = calc.Normalisation(landmark_list)
@@ -42,7 +44,7 @@ def classify(frame, landmarks_buffer, results_buffer):
 
     # 文字の予測 ###############################################################
     # 予測モデルのロード
-    tflitePath = "model/keypoint_classifier/keypoint_classifier.tflite"
+    tflitePath = "model/keypoint_classifier.tflite"
     keypoint_classifier = KeyPointClassifier(tflitePath)
 
     # 予測

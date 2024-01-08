@@ -25,9 +25,7 @@ def palmLength(landmarks):
 
 
 # ランドマークの画像上の相対座標 (x,y座標) を算出する関数 (z座標が必要になる場合は関数内で調整)
-def lmRelativeLoc(frame, landmarks):
-
-    img_width, img_height = frame.shape[1], frame.shape[0]
+def lmRelativeLoc(img_width, img_height, landmarks):
 
     landmark_list = []
 
@@ -42,7 +40,7 @@ def lmRelativeLoc(frame, landmarks):
 
 # 手掌長で正規化
 # 理由: 学習データに無い位置でジェスチャーをした場合、認識が上手くいかないため、一番最初の座標をもとに相対座標を取得する
-def Normalisation(landmark_list, palmLength=None):
+def Normalisation(landmark_list, palmLength=None, ignore_normalise=False):
 
     temp_landmark_list = copy.deepcopy(landmark_list)
 
@@ -60,6 +58,10 @@ def Normalisation(landmark_list, palmLength=None):
 
     # 最初の二行は0なので削除
     del temp_landmark_list[0:2]
+
+    # 正規化しない場合は、相対座標変換後のリストを返す
+    if ignore_normalise:
+        return temp_landmark_list
 
     # 手掌長の入力があった場合、手掌長で正規化
     if palmLength != None:
