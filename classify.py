@@ -67,5 +67,12 @@ def classify(frame, landmarks_buffer, results_buffer):
     palmLength_latest = calc.palmLength(lm_latest)
     # frame = draw.palmLength(frame, palmLength_latest)
 
-    # 画像の表示
-    cv2.imshow("MediaPipe Hands", frame)
+    confidence_threshold = 0.7
+
+    if confidence > confidence_threshold:
+        return frame, Labels[yubimoji_id], confidence
+    
+    else:
+        yubimoji = 'N/A'
+        low_confidence = 0
+        return frame, yubimoji, low_confidence

@@ -5,7 +5,6 @@
 # Standard Library
 import os
 import sys
-import csv
 import datetime
 import time
 import collections
@@ -20,16 +19,10 @@ import record
 import classify
 
 # 共通変数 ####################################################################
+frameCount = 0
 
-# 録画位置指示
-recLocations = ['正面','左上','上','右上','左','正面','右','左下','下','右下']
-
-# 指文字のラベル
-labelFilePath = 'setting/hand_keypoint_classifier_label.csv'
-with open(labelFilePath, encoding='utf-8-sig') as f:
-    Labels = csv.reader(f)
-    Labels = [row[0] for row in Labels]
-
+InputCount = 0 # 検査用
+noInputCount = 0 # 検査用
 
 # メイン関数 ##################################################################
 def main(mode, yubimoji_id=None):
@@ -61,18 +54,19 @@ def main(mode, yubimoji_id=None):
     video_capture.set(cv2.CAP_PROP_FRAME_HEIGHT, 360)
 
     # バッファリング用
-    #fps = video_capture.get(cv2.CAP_PROP_FPS) # フレームレートの取得
-    #buffer_duration = 3  # バッファリングする秒数
-    buffer_size = 30 # int(fps * buffer_duration) バッファリングするフレーム数
-    #buffering_threshold = buffer_size # バッファリングを開始する閾値
+    fps = video_capture.get(cv2.CAP_PROP_FPS) # フレームレートの取得
+    buffer_duration = 3  # バッファリングする秒数
+    buffer_size = 30 # int(fps * buffer_duration) # バッファリングするフレーム数
 
-    # 非入力カウント
-    InputCount = 0 # 便宜的に
-    noInputCount = 0
-    clearance_threshold = 15 # バッファをクリアする閾値
+    # フレームカウント
+    frameCount = 0
+    InputCount = 0 # 検査用
 
     # ランドマークのバッファ（リングバッファ）の初期化
     landmarks_buffer = collections.deque(maxlen=buffer_size)
+
+    # 確認用: 処理中のバッファ番号保管用メタバッファ
+    processingNo_buffer = collections.deque(maxlen=buffer_size)
 
     # 手掌長のバッファ
     palmLength_buffer = collections.deque(maxlen=buffer_size)
@@ -81,7 +75,6 @@ def main(mode, yubimoji_id=None):
     results_buffer = []
 
     # 処理中フラグ
-    startprocessbufferno = None # 消したい
     isProcessing = False
 
     starttime = datetime.datetime.now() #現在時刻の取得
@@ -99,7 +92,7 @@ def main(mode, yubimoji_id=None):
                     starttime = datetime.datetime.now() 
                     recordsCnt += 1
 
-                if recordsCnt >= len(recLocations):
+                if recordsCnt >= 9: #len(recLocations)
                     break
 
             # キー入力(ESC:プログラム終了)
@@ -119,6 +112,9 @@ def main(mode, yubimoji_id=None):
                 colour = (255, 255, 255) # 白
                 cv2.rectangle(frame, (550, 0), (width, height), colour, -1)
 
+            # FPSの表示
+            cv2.putText(frame, str(int(fps)), (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 0), 1, cv2.LINE_AA)
+
             # 検出処理の実行
             ##################################################################
             results = hands.process(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
@@ -133,13 +129,13 @@ def main(mode, yubimoji_id=None):
                         # 非入力カウントのリセット
                         noInputCount = 0
 
+                        # チェック用
                         InputCount += 1
-                        print('Right Hand :', InputCount)
 
                         # 録画モード // バッファは貯めずにタイムフレーム毎に処理
                         if mode == 0: 
 
-                            record.append(
+                            frame = record.append(
                                 frame, 
                                 landmarks, 
                                 yubimoji_id, 
@@ -166,39 +162,73 @@ def main(mode, yubimoji_id=None):
                             
                             landmarks_buffer.append(landmarks) # 最新の30フレーム分をバッファリング / 古いものは自動消去される
 
-                            # 入力動作を検知した場合、もしくはすでに入力開始動作を検知している場合
-                            if len(landmarks_buffer) >= buffer_size and \
-                               (detectInputGesture(palmLength_buffer) or \
-                                isProcessing == True):
+                            # 確認用
+                            processingNo_buffer.append(frameCount) # バッファリングしたフレーム番号を保存 / 古いものは自動消去される
+                            # 正しく過去30フレーム分が判定処理に流れていることを確認
 
-                                # 入力処理フラグを立てる
-                                isProcessing = True
+                            # バッファが必要数貯まったら処理
+                            if len(landmarks_buffer) >= buffer_size:
 
-                                classify.classify(frame, landmarks_buffer, results_buffer)
+                                # 入力開始動作を検知した場合
+                                if detectInputGesture(palmLength_buffer):
 
+                                    # 入力処理フラグを立てる
+                                    isProcessing = True
+
+                                    # 入力フラグを立てた時点でのカウントを保存
+                                    processingBufferCnt = InputCount
+
+                                    frame, yubimoji, confidence = classify.classify(frame,
+                                                                                    landmarks_buffer,
+                                                                                    results_buffer)
+                                    
+                                    print(frameCount, yubimoji, '{:.2f}%'.format(confidence * 100))
+
+                                # すでに処理中の場合
+                                elif isProcessing == True:
+                                    
+                                    # 判定処理中でも閾値以上入力開始動作の検知がなく、判定処理が規定フレーム以上続いている場合、変化なしと見做してバッファをクリア
+                                    # 意図通り動かないので、一度無効化
+                                    '''
+                                    clearance_threshold = 5000000000
+                                    if InputCount - processingBufferCnt > clearance_threshold:
+
+                                        clearBuffer(landmarks_buffer, 
+                                                    palmLength_buffer, 
+                                                    results_buffer, 
+                                                    clearance_threshold=clearance_threshold)
+                                        
+                                    else:
+                                    '''
+
+                                    frame, yubimoji, confidence = classify.classify(frame,
+                                                                                    landmarks_buffer,
+                                                                                    results_buffer)
+                                    
+                                    print(frameCount, yubimoji, '{:.2f}%'.format(confidence * 100))
+
+                            # バッファが溜まっていない場合は処理なし
+                            else:
+                                print(frameCount, ':Buffering')
+                                    
                     # 左手の場合
                     else:
-                        print('Left Hand :', noInputCount)
-
-                        noInputCount += 1
-
-                        if noInputCount > clearance_threshold:
-                            clearBuffer(landmarks_buffer, palmLength_buffer, results_buffer)
-                            isProcessing == False
-                            noInputCount = 0
-                            InputCount = 0
+                        clearBuffer(landmarks_buffer, 
+                                    processingNo_buffer,
+                                    palmLength_buffer, 
+                                    results_buffer)
 
             # 入力がない場合
             else:
-                print('No Input :', noInputCount)
-
-                noInputCount += 1
-
-                if noInputCount > clearance_threshold:
-                    clearBuffer(landmarks_buffer, palmLength_buffer, results_buffer)
-                    isProcessing == False
-                    noInputCount = 0
-                    InputCount = 0
+                clearBuffer(landmarks_buffer, 
+                            processingNo_buffer,
+                            palmLength_buffer, 
+                            results_buffer)
+                
+            # 画像の表示
+            cv2.imshow("MediaPipe Hands", frame)
+            # print(processingNo_buffer)
+            frameCount += 1
 
 
     # リソースの解放
@@ -225,15 +255,25 @@ def detectInputGesture(palmLength_buffer, threshold=0.1):
 
 
 # バッファのクリア
-def clearBuffer(landmarks_buffer, palmLength_buffer, results_buffer):
+def clearBuffer(landmarks_buffer, processingNo_buffer, palmLength_buffer, results_buffer, clearance_threshold=15):
 
-    # 新しいフレームが一定数入ってこない場合はバッファをクリア
-    # 判定の結果右手の判定が数フレーム外れてしまうことも考えられるので、閾値を超えるまではクリアしない
+    global isProcessing, frameCount, noInputCount, InputCount
 
-    landmarks_buffer.clear()
-    palmLength_buffer.clear()
-    results_buffer.clear()
-    print('buffer cleared')
+    noInputCount += 1
+
+    if noInputCount > clearance_threshold:
+        # 新しいフレームが一定数入ってこない場合はバッファをクリア
+        # 判定の結果右手の判定が数フレーム外れてしまうことも考えられるので、閾値を超えるまではクリアしない
+        landmarks_buffer.clear()
+        processingNo_buffer.clear()
+        palmLength_buffer.clear()
+        results_buffer.clear()
+
+        isProcessing = False
+        noInputCount = 0
+        InputCount = 0
+
+        print('{0}: Buffer & booleans cleared'.format(frameCount))
 
 
 if __name__ == "__main__": 

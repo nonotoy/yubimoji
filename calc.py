@@ -64,6 +64,12 @@ def Normalisation(landmark_list, palmLength=None):
     # 手掌長の入力があった場合、手掌長で正規化
     if palmLength != None:
         def normalize_(n): return n / palmLength
-        temp_landmark_list = list(map(normalize_, temp_landmark_list))
+
+    # 正規化
+    else: 
+        max_value = max(list(map(abs, temp_landmark_list)))
+        def normalize_(n): return n / max_value
+
+    temp_landmark_list = list(map(normalize_, temp_landmark_list))
 
     return temp_landmark_list

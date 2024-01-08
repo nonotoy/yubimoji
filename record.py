@@ -50,8 +50,7 @@ def append(frame, landmarks, yubimoji_id, recordsCnt, starttime):
     write.csvRecord(lm_reshaped, yubimoji_id, starttime)
     write.csvRecord(lm_normalised, yubimoji_id, starttime)  
 
-    # 画像の表示
-    cv2.imshow("MediaPipe Hands", frame)
+    return frame
 
 
 # 各ランドマークの座標を取得
